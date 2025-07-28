@@ -194,38 +194,6 @@ def inference(model, input, batch_size, overlap):
 
 def test(args, mode, data_loader, model, writer):
     metrics_dict = []
-    haussdor = HausdorffDistanceMetric(include_background=True, percentile=95)
-    meandice = DiceMetric(include_background=True)
-    
-    def calculate_iou(pred, target):
-        intersection = torch.sum(pred & target).item()
-        union = torch.sum(pred | target).item()
-        return intersection / union if union > 0 else 1.0
-
-    def calculate_accuracy(pred, target):
-        correct = torch.sum(pred == target).item()
-        total = pred.numel()
-        return correct / total
-
-    def calculate_sensitivity(pred, target):
-        tp = torch.sum(pred & target).item()
-        fn = torch.sum(~pred & target).item()
-        return tp / (tp + fn) if (tp + fn) > 0 else 1.0
-
-    def calculate_asd(pred, target):
-        pred_surface = torch.nonzero(pred, as_tuple=False)
-        target_surface = torch.nonzero(target, as_tuple=False)
-        if pred_surface.size(0) == 0 or target_surface.size(0) == 0:
-            return 0.0
-        # 分块计算 cdist 以减少内存使用
-        chunk_size = 1024  # 每次处理的块大小
-        min_distances = []
-        for i in range(0, pred_surface.size(0), chunk_size):
-            pred_chunk = pred_surface[i:i + chunk_size].float()
-            distances = torch.cdist(pred_chunk, target_surface.float())
-            min_distances.append(distances.min(dim=1)[0])
-        min_distances = torch.cat(min_distances)
-        return min_distances.mean().item()
 
     for i, data in enumerate(data_loader):
         patient_id = data["patient_id"][0]
@@ -273,30 +241,21 @@ def test(args, mode, data_loader, model, writer):
                 
         targets = targets[:, :, pad_list[-4]:targets.shape[2]-pad_list[-3], pad_list[-6]:targets.shape[3]-pad_list[-5], pad_list[-8]:targets.shape[4]-pad_list[-7]]
         predict = predict[:, :, pad_list[-4]:predict.shape[2]-pad_list[-3], pad_list[-6]:predict.shape[3]-pad_list[-5], pad_list[-8]:predict.shape[4]-pad_list[-7]]
-        predict = (predict > 0.5).squeeze()
+        predict = (predict>0.5).squeeze()
         targets = targets.squeeze()
-        
-        # 计算指标
-        dice_metrics = cal_dice(predict, targets, haussdor, meandice)
+        dice_metrics = cal_dice(predict, targets, patient_id)
         confuse_metric = cal_confuse(predict, targets, patient_id)
-        et_dice, tc_dice, wt_dice = dice_metrics[0], dice_metrics[1], dice_metrics[2]
-        et_hd, tc_hd, wt_hd = dice_metrics[3], dice_metrics[4], dice_metrics[5]
+        # 正确提取每个指标的Dice和HD数值
+        et_dice = dice_metrics[0]["DICE"]  # ET类的Dice
+        et_hd = dice_metrics[0]["HAUSSDORF"]  # ET类的HD
+
+        tc_dice = dice_metrics[1]["DICE"]  # TC类的Dice
+        tc_hd = dice_metrics[1]["HAUSSDORF"]  # TC类的HD
+
+        wt_dice = dice_metrics[2]["DICE"]  # WT类的Dice
+        wt_hd = dice_metrics[2]["HAUSSDORF"]  # WT类的HD
         et_sens, tc_sens, wt_sens = confuse_metric[0][0], confuse_metric[1][0], confuse_metric[2][0]
         et_spec, tc_spec, wt_spec = confuse_metric[0][1], confuse_metric[1][1], confuse_metric[2][1]
-
-        # 计算新增指标
-        et_iou = calculate_iou(predict[0], targets[0])
-        tc_iou = calculate_iou(predict[1], targets[1])
-        wt_iou = calculate_iou(predict[2], targets[2])
-
-        et_acc = calculate_accuracy(predict[0], targets[0])
-        tc_acc = calculate_accuracy(predict[1], targets[1])
-        wt_acc = calculate_accuracy(predict[2], targets[2])
-
-        et_asd = calculate_asd(predict[0], targets[0])
-        tc_asd = calculate_asd(predict[1], targets[1])
-        wt_asd = calculate_asd(predict[2], targets[2])
-
         # 将所有指标转换为 Python 原生类型
         metrics_dict.append(dict(
             id=patient_id,
@@ -304,15 +263,12 @@ def test(args, mode, data_loader, model, writer):
             et_hd=float(et_hd), tc_hd=float(tc_hd), wt_hd=float(wt_hd),
             et_sens=float(et_sens), tc_sens=float(tc_sens), wt_sens=float(wt_sens),
             et_spec=float(et_spec), tc_spec=float(tc_spec), wt_spec=float(wt_spec),
-            et_iou=float(et_iou), tc_iou=float(tc_iou), wt_iou=float(wt_iou),
-            et_acc=float(et_acc), tc_acc=float(tc_acc), wt_acc=float(wt_acc),
-            et_asd=float(et_asd), tc_asd=float(tc_asd), wt_asd=float(wt_asd)
         ))
-        save_seg_csv(args, f"csv/{args.exp_name}", metrics_dict)
         full_predict = np.zeros((155, 240, 240))
         predict = reconstruct_label(predict)
         full_predict[slice(*nonzero_indexes[0]), slice(*nonzero_indexes[1]), slice(*nonzero_indexes[2])] = predict
         save_test_label(args, mode, patient_id, full_predict)
+        save_seg_csv(args, f"csv/{args.exp_name}", metrics_dict)
   
 def reconstruct_label(image):
     if type(image) == torch.Tensor:

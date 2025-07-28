@@ -6,7 +6,9 @@ import random
 import torch
 import torch.nn.functional as F
 from get_dataset_folder import get_brats_folder
-
+import pprint
+from medpy.metric import binary
+from monai.metrics import DiceMetric, HausdorffDistanceMetric
 
 def mkdir(folder):
     os.makedirs(folder, exist_ok=True)
@@ -23,7 +25,7 @@ def save_checkpoint(args, state, name="checkpont"):
 def save_seg_csv(args, mode, csv):
     try:
         val_metrics = pd.DataFrame.from_records(csv)
-        columns = ['id', 'et_dice', 'tc_dice', 'wt_dice', 'et_hd', 'tc_hd', 'wt_hd', 'et_sens', 'tc_sens', 'wt_sens', 'et_spec', 'tc_spec', 'wt_spec', 'et_iou', 'tc_iou', 'wt_iou', 'et_acc', 'tc_acc', 'wt_acc', 'et_asd', 'tc_asd' ,'wt_asd']
+        columns = ['id', 'et_dice', 'tc_dice', 'wt_dice', 'et_hd', 'tc_hd', 'wt_hd', 'et_sens', 'tc_sens', 'wt_sens', 'et_spec', 'tc_spec', 'wt_spec']
         val_metrics.to_csv(f'{str(args.csv_folder)}/metrics.csv', index=False, columns=columns)
     except KeyboardInterrupt:
         print("Save CSV File Error!")
@@ -127,65 +129,59 @@ def minmax(image, low_perc=1, high_perc=99):
     return image
     
 def cal_confuse(preds, targets, patient):
+    assert preds.shape == targets.shape
+    results = []
+    total_pixels = targets[0].numel()  # 获取总像素数
+    
+    for i in range(3):  # ET, TC, WT
+        p = preds[i].bool()
+        t = targets[i].bool()
+        
+        # 计算混淆矩阵
+        tp = (p & t).sum().item()
+        tn = (~p & ~t).sum().item()
+        fp = (p & ~t).sum().item()
+        fn = (~p & t).sum().item()
+        
+        # 处理分母为零的情况
+        sens = tp / (tp + fn) if (tp + fn) > 0 else float('nan')
+        spec = tn / (tn + fp) if (tn + fp) > 0 else float('nan')
+        
+        results.append([sens, spec])
+    return results
+
+
+def cal_dice(preds, targets, patient, tta=False):
     assert preds.shape == targets.shape, "Preds and targets do not have the same size"
     labels = ["ET", "TC", "WT"]
-    confuse_list = []
+    metrics_list = []
+
     for i, label in enumerate(labels):
-        if torch.sum(targets[i]) == 0 and torch.sum(targets[i]==0):
-            tp=tn=fp=fn=0
-            sens=spec=1
-        elif torch.sum(targets[i]) == 0:
-            print(f'{patient} did not have {label}')
-            sens = tp = fn = 0      
-            tn = torch.sum(torch.logical_and(torch.logical_not(preds[i]), torch.logical_not(targets[i])))
-            fp = torch.sum(torch.logical_and(preds[i], torch.logical_not(targets[i])))
-            spec = tn / (tn + fp)
+        metrics = {"patient_id": patient, "label": label, "tta": tta}
+
+        # 使用 torch.sum 替代 np.sum
+        if torch.sum(targets[i]) == 0:
+            print(f"{label} not present for {patient}")
+            dice = 1 if torch.sum(preds[i]) == 0 else 0
         else:
-            tp = torch.sum(torch.logical_and(preds[i], targets[i]))
-            tn = torch.sum(torch.logical_and(torch.logical_not(preds[i]), torch.logical_not(targets[i])))
-            fp = torch.sum(torch.logical_and(preds[i], torch.logical_not(targets[i])))
-            fn = torch.sum(torch.logical_and(torch.logical_not(preds[i]), targets[i]))
-
-            sens = tp / (tp + fn)
-            spec = tn / (tn + fp)
-        confuse_list.append([sens, spec])
-    return confuse_list
-
-def cal_dice(predict, target, haussdor, dice):
-    p_et = predict[0]
-    p_tc = predict[1]
-    p_wt = predict[2]
-    t_et = target[0]
-    t_tc = target[1]
-    t_wt = target[2]
-    p_et, p_tc, p_wt, t_et, t_tc, t_wt =  p_et.unsqueeze(0).unsqueeze(0), p_tc.unsqueeze(0).unsqueeze(0), p_wt.unsqueeze(0).unsqueeze(0), t_et.unsqueeze(0).unsqueeze(0), t_tc.unsqueeze(0).unsqueeze(0), t_wt.unsqueeze(0).unsqueeze(0)
+            # 使用 torch 的逻辑操作
+            tp = torch.sum(torch.logical_and(preds[i], targets[i])).item()
+            fp = torch.sum(torch.logical_and(preds[i], torch.logical_not(targets[i]))).item()
+            fn = torch.sum(torch.logical_and(torch.logical_not(preds[i]), targets[i])).item()
+            dice = 2 * tp / (2 * tp + fp + fn) if (2*tp + fp + fn) != 0 else 0
+        
+        # HD95计算前转换为NumPy数组
+        if torch.sum(preds[i]) > 0 and torch.sum(targets[i]) > 0:
+            # 确保张量在CPU上并转换为NumPy
+            hd95 = binary.hd95(
+                preds[i].cpu().numpy().astype(bool), 
+                targets[i].cpu().numpy().astype(bool)
+            )
+        else:
+            hd95 = 0
+        
+        metrics["DICE"] = dice  # 确保这些常量已定义
+        metrics["HAUSSDORF"] = hd95
+        metrics_list.append(metrics)
     
-    if torch.sum(p_et) != 0 and torch.sum(t_et) != 0:
-        et_dice = float(dice(p_et, t_et).cpu().numpy())
-        et_hd = float(haussdor(p_et, t_et).cpu().numpy())
-    elif torch.sum(p_et) == 0 and torch.sum(t_et) == 0:
-        et_dice =1
-        et_hd = 0
-    elif (torch.sum(p_et) == 0 and torch.sum(t_et) != 0) or (torch.sum(p_et) != 0 and torch.sum(t_et) == 0):
-        et_dice =0
-        et_hd = 347
-    if torch.sum(p_tc) != 0 and torch.sum(t_tc) != 0:
-        tc_dice = float(dice(p_tc, t_tc).cpu().numpy())
-        tc_hd = float(haussdor(p_tc, t_tc).cpu().numpy())
-    elif torch.sum(p_tc) == 0 and torch.sum(t_tc) == 0:
-        tc_dice =1
-        tc_hd = 0
-    elif (torch.sum(p_tc) == 0 and torch.sum(t_tc) != 0) or (torch.sum(p_tc) != 0 and torch.sum(t_tc) == 0):
-        tc_dice =0
-        tc_hd = 347
-    if torch.sum(p_wt) != 0 and torch.sum(t_wt) != 0:
-        wt_dice = float(dice(p_wt, t_wt).cpu().numpy())
-        wt_hd = float(haussdor(p_wt, t_wt).cpu().numpy())
-    elif torch.sum(p_wt) == 0 and torch.sum(t_wt) == 0:
-        wt_dice =1
-        wt_hd = 0
-    elif (torch.sum(p_wt) == 0 and torch.sum(t_wt) != 0) or (torch.sum(p_wt) != 0 and torch.sum(t_wt) == 0):
-        wt_dice =0
-        wt_hd = 347
-    
-    return [et_dice, tc_dice, wt_dice, et_hd, tc_hd, wt_hd]
+    return metrics_list
