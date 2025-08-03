@@ -131,19 +131,17 @@ def minmax(image, low_perc=1, high_perc=99):
 def cal_confuse(preds, targets, patient):
     assert preds.shape == targets.shape
     results = []
-    total_pixels = targets[0].numel()  # 获取总像素数
+    total_pixels = targets[0].numel()  
     
     for i in range(3):  # ET, TC, WT
         p = preds[i].bool()
         t = targets[i].bool()
         
-        # 计算混淆矩阵
         tp = (p & t).sum().item()
         tn = (~p & ~t).sum().item()
         fp = (p & ~t).sum().item()
         fn = (~p & t).sum().item()
         
-        # 处理分母为零的情况
         sens = tp / (tp + fn) if (tp + fn) > 0 else float('nan')
         spec = tn / (tn + fp) if (tn + fp) > 0 else float('nan')
         
@@ -159,20 +157,16 @@ def cal_dice(preds, targets, patient, tta=False):
     for i, label in enumerate(labels):
         metrics = {"patient_id": patient, "label": label, "tta": tta}
 
-        # 使用 torch.sum 替代 np.sum
         if torch.sum(targets[i]) == 0:
             print(f"{label} not present for {patient}")
             dice = 1 if torch.sum(preds[i]) == 0 else 0
         else:
-            # 使用 torch 的逻辑操作
             tp = torch.sum(torch.logical_and(preds[i], targets[i])).item()
             fp = torch.sum(torch.logical_and(preds[i], torch.logical_not(targets[i]))).item()
             fn = torch.sum(torch.logical_and(torch.logical_not(preds[i]), targets[i])).item()
             dice = 2 * tp / (2 * tp + fp + fn) if (2*tp + fp + fn) != 0 else 0
         
-        # HD95计算前转换为NumPy数组
         if torch.sum(preds[i]) > 0 and torch.sum(targets[i]) > 0:
-            # 确保张量在CPU上并转换为NumPy
             hd95 = binary.hd95(
                 preds[i].cpu().numpy().astype(bool), 
                 targets[i].cpu().numpy().astype(bool)
@@ -180,7 +174,7 @@ def cal_dice(preds, targets, patient, tta=False):
         else:
             hd95 = 0
         
-        metrics["DICE"] = dice  # 确保这些常量已定义
+        metrics["DICE"] = dice  
         metrics["HAUSSDORF"] = hd95
         metrics_list.append(metrics)
     
