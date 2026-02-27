@@ -1,6 +1,6 @@
 # MA-HybridBTS: Modality-Aware Multi-Scale Hybrid 3D Conv-Transformer for Brain Tumor Segmentation
 ## [update]
-[2026.2.27] Please link to A more comprehensive version [MA-HyridBTS](https://github.com/Jia7888/MA-HybridBTS)
+[2026.2.27] Please link to A more comprehensive version [MA-HyridBTS](https://github.com/Jia7888/MA-HybridBTS).
 
 ## [train & test]
 if you want to train my model, you can run
